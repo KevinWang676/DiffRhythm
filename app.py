@@ -285,10 +285,6 @@ async def generate_music(
             params
         )
         
-        # Clean up GPU memory after processing
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
         # Schedule cleanup of temporary files
         background_tasks.add_task(
             cleanup_temp_files, 
@@ -314,10 +310,6 @@ async def generate_music(
         error_details = traceback.format_exc()
         print(f"Error during music generation: {str(e)}\n{error_details}")
         
-        # Clean up GPU memory in case of error
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
         # Clean up files in case of error
         cleanup_temp_files(files_to_cleanup + [str(output_path)])
         raise HTTPException(status_code=500, detail=f"Error during music generation: {str(e)}")
