@@ -3,7 +3,7 @@ import torchaudio
 from einops import rearrange
 import os
 import time
-from infer_utils import (
+from infer.infer_utils import (
     get_reference_latent,
     get_lrc_token,
     get_style_prompt,
