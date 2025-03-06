@@ -76,41 +76,98 @@ def load_models():
     
     return cfm, tokenizer, muq, vae
 
-# Modified get_style_prompt function with format conversion if needed
+# Modified get_style_prompt function with silent error handling
 def get_style_prompt_with_format_handling(muq, audio_path):
+    """
+    Enhanced style prompt extraction that handles various audio formats
+    and converts automatically if needed without showing error messages.
+    """
     try:
         print(f"Getting style prompt from {audio_path}")
         
-        # Try the original function first
+        # Try the original function first - silently catch specific errors
         try:
             return get_style_prompt(muq, audio_path)
-        except Exception as e:
-            print(f"Error with original format, trying to convert: {str(e)}")
+        except Exception:
+            # If that fails, try to convert the audio to a compatible format
+            # without showing the specific error message
+            print(f"Converting audio file to a compatible format...")
             
             # If that fails, try to convert the audio to a compatible format
-            temp_mp3_path = f"{audio_path}.converted.mp3"
+            temp_wav_path = f"{audio_path}.converted.wav"
             
             # Load and resample the audio with torchaudio
             try:
                 audio, sr = torchaudio.load(audio_path)
-                torchaudio.save(temp_mp3_path, audio, sr, format="mp3")
-                print(f"Successfully converted audio to {temp_mp3_path}")
+                # Convert to mono if needed
+                if audio.shape[0] > 1:
+                    audio = torch.mean(audio, dim=0, keepdim=True)
+                    
+                # Save as WAV format first (most compatible)
+                torchaudio.save(temp_wav_path, audio, sr)
+                print(f"Converted audio to WAV format for processing")
                 
                 # Try again with the converted file
-                result = get_style_prompt(muq, temp_mp3_path)
-                
-                # Clean up temporary file
-                if os.path.exists(temp_mp3_path):
-                    os.remove(temp_mp3_path)
+                try:
+                    result = get_style_prompt(muq, temp_wav_path)
                     
-                return result
-            except Exception as conv_error:
-                print(f"Error converting audio: {str(conv_error)}")
-                raise RuntimeError(f"Could not process audio file {audio_path}. Original error: {str(e)}, Conversion error: {str(conv_error)}")
+                    # Clean up temporary file
+                    if os.path.exists(temp_wav_path):
+                        os.remove(temp_wav_path)
+                        
+                    return result
+                except Exception:
+                    # If WAV doesn't work, try MP3 as a last resort
+                    temp_mp3_path = f"{audio_path}.converted.mp3"
+                    torchaudio.save(temp_mp3_path, audio, sr, format="mp3")
+                    print(f"Converted audio to MP3 format for processing")
+                    
+                    result = get_style_prompt(muq, temp_mp3_path)
+                    
+                    # Clean up temporary files
+                    if os.path.exists(temp_mp3_path):
+                        os.remove(temp_mp3_path)
+                    if os.path.exists(temp_wav_path):
+                        os.remove(temp_wav_path)
+                        
+                    return result
+            except Exception as e:
+                print(f"Could not process audio after conversion attempts: {str(e)}")
+                raise RuntimeError(f"Could not process audio file after multiple conversion attempts")
     
     except Exception as e:
         print(f"Error getting style prompt: {str(e)}")
         raise
+
+# Process audio using torchaudio to convert to a standard format
+def process_audio_file(input_path, output_path=None):
+    """
+    Process audio file to ensure it's in a compatible format
+    Returns processed audio path
+    """
+    try:
+        print(f"Pre-processing audio file: {input_path}")
+        
+        if output_path is None:
+            output_path = f"{input_path}.processed.wav"
+            
+        # Load the audio
+        audio, sr = torchaudio.load(input_path)
+        
+        # Convert to mono if needed
+        if audio.shape[0] > 1:
+            audio = torch.mean(audio, dim=0, keepdim=True)
+        
+        # Save as WAV
+        torchaudio.save(output_path, audio, sr)
+        print(f"Pre-processed audio saved to: {output_path}")
+        
+        return output_path
+    
+    except Exception as e:
+        print(f"Warning: Audio pre-processing failed: {str(e)}. Using original file.")
+        # Return original if processing fails
+        return input_path
 
 # Inference function
 def inference_process(cfm_model, vae_model, cond, text, duration, style_prompt, negative_style_prompt, start_time, steps=32, cfg_strength=4.0):
@@ -163,7 +220,7 @@ def get_file_extension(filename, content_type=None):
         return ext
     
     # Default extension if nothing else works
-    return ".mp3"
+    return ".wav"  # Changed to .wav as default for better compatibility
 
 # Music generation process - using lyrics text directly
 async def process_music_generation(lyrics_text, ref_audio_path, output_path, params):
@@ -190,9 +247,17 @@ async def process_music_generation(lyrics_text, ref_audio_path, output_path, par
     print("Lyrics processed successfully")
     
     print(f"Processing reference audio from {ref_audio_path}")
+    
+    # Pre-process the audio to ensure compatibility - only if needed
+    processed_audio_path = process_audio_file(ref_audio_path)
+    
     # Get style prompt from reference audio with format handling
-    style_prompt = get_style_prompt_with_format_handling(muq, ref_audio_path)
+    style_prompt = get_style_prompt_with_format_handling(muq, processed_audio_path)
     print("Reference audio processed successfully")
+    
+    # Clean up processed file if it's different from original
+    if processed_audio_path != ref_audio_path and os.path.exists(processed_audio_path):
+        os.remove(processed_audio_path)
     
     # Get negative style prompt
     negative_style_prompt = get_negative_style_prompt(device)
