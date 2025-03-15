@@ -25,6 +25,12 @@ DiffRhythm (Chinese: 谛韵, Dì Yùn) is the ***first*** open-sourced diffusion
 
 * 📌 Join Us on Discord! [![Discord](https://dcbadge.limes.pink/api/server/https://discord.gg/vUD4zgTpJa)](https://discord.gg/vUD4zgTpJa)
 
+* **2025.3.15 🔥** **DiffRhythm-full Official Release: Complete Music Generation!**  
+
+    The wait is over - **285s full-length music generation** is now live!  
+
+    *The symphony evolves. What impossible music will you compose next?*
+
 * **2025.3.11 💻** DiffRhythm can now run on MacOS! 
 
 * **2025.3.9 🔥** **DiffRhythm Update: Text-to-Music and Pure Music Generation!**  
@@ -53,10 +59,13 @@ DiffRhythm (Chinese: 谛韵, Dì Yùn) is the ***first*** open-sourced diffusion
 * **2025.3.4 🔥** We released the [DiffRhythm paper](https://arxiv.org/abs/2503.01183) and [Huggingface Space demo](https://huggingface.co/spaces/ASLP-lab/DiffRhythm).
 
 ## TODOs
-- [ ] Release DiffRhythm-full.
+- [ ] Dynamic length control
+- [ ] Vocals only
+- [ ] Song extension
 - [ ] Support Colab.
 - [ ] Support Docker.
-- [ ] Release training code.
+- [x] Release DiffRhythm-full.
+- [x] Release training code.
 - [x] Support local deployment.
 - [x] Release paper to Arxiv.
 - [x] Online serving on Hugging Face Space.
@@ -66,7 +75,7 @@ DiffRhythm (Chinese: 谛韵, Dì Yùn) is the ***first*** open-sourced diffusion
 |  Model   | HuggingFace |
 |  ----  | ----  |
 | DiffRhythm-base (1m35s)  | https://huggingface.co/ASLP-lab/DiffRhythm-base |
-| DiffRhythm-full (4m45s)  | Coming soon... |
+| DiffRhythm-full (4m45s)  | https://huggingface.co/ASLP-lab/DiffRhythm-full |
 | DiffRhythm-vae  | https://huggingface.co/ASLP-lab/DiffRhythm-vae |
 
 ## Inference
