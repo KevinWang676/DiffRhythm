@@ -53,6 +53,7 @@ class GenerateMusicRequest(BaseModel):
     steps: int = 32
     cfg_strength: float = 4.0
     lyrics: str = ""  # Added lyrics field to the model
+    chunked: bool = False  # Added chunked parameter for decoding
 
 # Cleanup function to remove temporary files
 def cleanup_temp_files(file_paths):
@@ -68,8 +69,12 @@ def cleanup_temp_files(file_paths):
 def load_models():
     global device
     
-    assert torch.cuda.is_available(), "only available on gpu"
-    device = 'cuda'
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     
     print("Loading models from infer_utils.prepare_model()...")
     cfm, tokenizer, muq, vae = prepare_model(device)
@@ -77,12 +82,19 @@ def load_models():
     return cfm, tokenizer, muq, vae
 
 # Modified get_style_prompt function with silent error handling
-def get_style_prompt_with_format_handling(muq, audio_path):
+def get_style_prompt_with_format_handling(muq, audio_path=None, prompt=None):
     """
     Enhanced style prompt extraction that handles various audio formats
     and converts automatically if needed without showing error messages.
+    Can also use a text prompt instead of audio.
     """
     try:
+        # Use text prompt if provided
+        if prompt:
+            print(f"Using text prompt: {prompt}")
+            return get_style_prompt(muq, prompt=prompt)
+        
+        # Otherwise use audio file
         print(f"Getting style prompt from {audio_path}")
         
         # Try the original function first - silently catch specific errors
@@ -169,12 +181,11 @@ def process_audio_file(input_path, output_path=None):
         # Return original if processing fails
         return input_path
 
-# Inference function
-def inference_process(cfm_model, vae_model, cond, text, duration, style_prompt, negative_style_prompt, start_time, steps=32, cfg_strength=4.0):
+# Updated inference function to match the new implementation
+def inference_process(cfm_model, vae_model, cond, text, duration, style_prompt, negative_style_prompt, start_time, steps=32, cfg_strength=4.0, chunked=False):
     with torch.inference_mode():
-        # The original code uses: generated, * = cfm_model.sample(...)
-        # Handle the unpacking properly
-        result = cfm_model.sample(
+        # Update to match the new return value pattern (now returns two values)
+        generated, _ = cfm_model.sample(
             cond=cond,
             text=text,
             duration=duration,
@@ -185,16 +196,11 @@ def inference_process(cfm_model, vae_model, cond, text, duration, style_prompt, 
             start_time=start_time
         )
         
-        # Extract the generated result (first element if it's a tuple)
-        if isinstance(result, tuple):
-            generated = result[0]
-        else:
-            generated = result
-        
         generated = generated.to(torch.float32)
         latent = generated.transpose(1, 2)  # [b d t]
     
-        output = decode_audio(latent, vae_model, chunked=False)
+        # Now pass the chunked parameter
+        output = decode_audio(latent, vae_model, chunked=chunked)
         
         # Rearrange audio batch to a single sequence
         output = rearrange(output, "b d n -> d (b n)")
@@ -222,14 +228,17 @@ def get_file_extension(filename, content_type=None):
     # Default extension if nothing else works
     return ".wav"  # Changed to .wav as default for better compatibility
 
-# Music generation process - using lyrics text directly
-async def process_music_generation(lyrics_text, ref_audio_path, output_path, params):
+# Updated music generation process to match the new inference implementation
+async def process_music_generation(lyrics_text, ref_audio_path=None, ref_prompt=None, output_path=None, params=None):
     global models, device
     
     if models is None:
         raise ValueError("Models not loaded")
         
     cfm, tokenizer, muq, vae = models
+    
+    if params is None:
+        params = GenerateMusicRequest()
     
     audio_length = params.audio_length
     if audio_length == 95:
@@ -246,18 +255,26 @@ async def process_music_generation(lyrics_text, ref_audio_path, output_path, par
     lrc_prompt, start_time = get_lrc_token(lrc, tokenizer, device)
     print("Lyrics processed successfully")
     
-    print(f"Processing reference audio from {ref_audio_path}")
-    
-    # Pre-process the audio to ensure compatibility - only if needed
-    processed_audio_path = process_audio_file(ref_audio_path)
-    
-    # Get style prompt from reference audio with format handling
-    style_prompt = get_style_prompt_with_format_handling(muq, processed_audio_path)
-    print("Reference audio processed successfully")
-    
-    # Clean up processed file if it's different from original
-    if processed_audio_path != ref_audio_path and os.path.exists(processed_audio_path):
-        os.remove(processed_audio_path)
+    # Get style prompt - now handle both audio path and text prompt
+    if ref_audio_path:
+        print(f"Processing reference audio from {ref_audio_path}")
+        
+        # Pre-process the audio to ensure compatibility - only if needed
+        processed_audio_path = process_audio_file(ref_audio_path)
+        
+        # Get style prompt from reference audio with format handling
+        style_prompt = get_style_prompt_with_format_handling(muq, audio_path=processed_audio_path)
+        print("Reference audio processed successfully")
+        
+        # Clean up processed file if it's different from original
+        if processed_audio_path != ref_audio_path and os.path.exists(processed_audio_path):
+            os.remove(processed_audio_path)
+    elif ref_prompt:
+        print(f"Using reference prompt: {ref_prompt}")
+        style_prompt = get_style_prompt_with_format_handling(muq, prompt=ref_prompt)
+        print("Reference prompt processed successfully")
+    else:
+        raise ValueError("Either reference audio or reference prompt must be provided")
     
     # Get negative style prompt
     negative_style_prompt = get_negative_style_prompt(device)
@@ -266,8 +283,8 @@ async def process_music_generation(lyrics_text, ref_audio_path, output_path, par
     print(f"Getting reference latent with max_frames={max_frames}")
     latent_prompt = get_reference_latent(device, max_frames)
     
-    # Run inference
-    print(f"Starting inference with steps={params.steps}, cfg_strength={params.cfg_strength}")
+    # Run inference with updated function
+    print(f"Starting inference with steps={params.steps}, cfg_strength={params.cfg_strength}, chunked={params.chunked}")
     s_t = time.time()
     generated_song = inference_process(
         cfm_model=cfm, 
@@ -279,20 +296,22 @@ async def process_music_generation(lyrics_text, ref_audio_path, output_path, par
         negative_style_prompt=negative_style_prompt,
         start_time=start_time,
         steps=params.steps,
-        cfg_strength=params.cfg_strength
+        cfg_strength=params.cfg_strength,
+        chunked=params.chunked
     )
     e_t = time.time() - s_t
     print(f"Inference completed in {e_t:.2f} seconds")
     
     # Save output
-    print(f"Saving output to {output_path}")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    torchaudio.save(output_path, generated_song, sample_rate=44100)
-    print(f"Output saved successfully, size: {os.path.getsize(output_path)} bytes")
+    if output_path:
+        print(f"Saving output to {output_path}")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        torchaudio.save(output_path, generated_song, sample_rate=44100)
+        print(f"Output saved successfully, size: {os.path.getsize(output_path)} bytes")
     
-    return {"output_path": output_path, "inference_time": e_t}
+    return {"output_path": output_path, "inference_time": e_t, "generated_song": generated_song}
 
-# Endpoint to generate music
+# Updated endpoint to generate music with new parameters
 @app.post("/generate_music/")
 async def generate_music(
     background_tasks: BackgroundTasks,
@@ -301,21 +320,25 @@ async def generate_music(
     lyrics_url: Optional[str] = Form(None),
     reference_audio_url: Optional[str] = Form(None),
     lyrics_text: Optional[str] = Form(None),
+    reference_prompt: Optional[str] = Form(None),
     audio_length: int = Form(95),
     steps: int = Form(32),
-    cfg_strength: float = Form(4.0)
+    cfg_strength: float = Form(4.0),
+    chunked: bool = Form(False)
 ):
     """
-    Generate music from lyrics and a reference audio
+    Generate music from lyrics and a reference audio or prompt
     
     - **lyrics_file**: The lyrics file (LRC format)
     - **reference_audio**: The reference audio file (MP3, WAV, etc.)
     - **lyrics_url**: URL to the lyrics file (alternative to lyrics_file)
     - **reference_audio_url**: URL to the reference audio file (alternative to reference_audio)
     - **lyrics_text**: Direct input of lyrics text in LRC format (alternative to lyrics_file/lyrics_url)
+    - **reference_prompt**: Text prompt for style (alternative to reference_audio/reference_audio_url)
     - **audio_length**: Length of generated song in seconds (default: 95)
     - **steps**: Number of diffusion steps (default: 32)
     - **cfg_strength**: Classifier-free guidance strength (default: 4.0)
+    - **chunked**: Whether to use chunked decoding (default: False)
     """
     if models is None:
         raise HTTPException(
@@ -349,42 +372,59 @@ async def generate_music(
         else:
             raise HTTPException(status_code=400, detail="Either lyrics_file, lyrics_url, or lyrics_text must be provided")
         
-        # Process reference audio file - preserve original extension
+        # Check if we have a reference prompt or need to process reference audio
         ref_audio_path = None
         
-        if reference_audio:
-            # Get appropriate file extension
-            file_ext = get_file_extension(reference_audio.filename, reference_audio.content_type)
-            ref_audio_path = temp_dir / f"ref_audio_{unique_id}{file_ext}"
-            
-            ref_audio_content = await reference_audio.read()
-            print(f"Reference audio file: {reference_audio.filename}, size: {len(ref_audio_content)} bytes")
-            with open(ref_audio_path, "wb") as buffer:
-                buffer.write(ref_audio_content)
-            files_to_cleanup.append(str(ref_audio_path))
-            
-        elif reference_audio_url:
-            print(f"Downloading reference audio from URL: {reference_audio_url}")
-            response = requests.get(reference_audio_url)
-            response.raise_for_status()
-            
-            # Get file extension from URL or content type
-            file_ext = get_file_extension(
-                reference_audio_url, 
-                response.headers.get('content-type')
+        # Make sure we have either reference_prompt or reference_audio/url, but not both
+        has_ref_prompt = reference_prompt is not None and reference_prompt.strip() != ""
+        has_ref_audio = reference_audio is not None or reference_audio_url is not None
+        
+        if has_ref_prompt and has_ref_audio:
+            raise HTTPException(
+                status_code=400, 
+                detail="Please provide either reference_prompt OR reference_audio/reference_audio_url, not both"
             )
-            ref_audio_path = temp_dir / f"ref_audio_{unique_id}{file_ext}"
-            
-            ref_audio_content = response.content
-            print(f"Reference audio from URL, size: {len(ref_audio_content)} bytes")
-            with open(ref_audio_path, "wb") as buffer:
-                buffer.write(ref_audio_content)
-            files_to_cleanup.append(str(ref_audio_path))
-        else:
-            raise HTTPException(status_code=400, detail="Either reference_audio or reference_audio_url must be provided")
-            
-        if not os.path.exists(ref_audio_path) or not os.path.getsize(ref_audio_path):
-            raise HTTPException(status_code=400, detail="Reference audio file is empty or could not be created")
+        
+        if not has_ref_prompt and not has_ref_audio:
+            raise HTTPException(
+                status_code=400, 
+                detail="Either reference_prompt OR reference_audio/reference_audio_url must be provided"
+            )
+        
+        # Process reference audio file if provided
+        if not has_ref_prompt:
+            if reference_audio:
+                # Get appropriate file extension
+                file_ext = get_file_extension(reference_audio.filename, reference_audio.content_type)
+                ref_audio_path = temp_dir / f"ref_audio_{unique_id}{file_ext}"
+                
+                ref_audio_content = await reference_audio.read()
+                print(f"Reference audio file: {reference_audio.filename}, size: {len(ref_audio_content)} bytes")
+                with open(ref_audio_path, "wb") as buffer:
+                    buffer.write(ref_audio_content)
+                files_to_cleanup.append(str(ref_audio_path))
+                
+            elif reference_audio_url:
+                print(f"Downloading reference audio from URL: {reference_audio_url}")
+                response = requests.get(reference_audio_url)
+                response.raise_for_status()
+                
+                # Get file extension from URL or content type
+                file_ext = get_file_extension(
+                    reference_audio_url, 
+                    response.headers.get('content-type')
+                )
+                ref_audio_path = temp_dir / f"ref_audio_{unique_id}{file_ext}"
+                
+                ref_audio_content = response.content
+                print(f"Reference audio from URL, size: {len(ref_audio_content)} bytes")
+                with open(ref_audio_path, "wb") as buffer:
+                    buffer.write(ref_audio_content)
+                files_to_cleanup.append(str(ref_audio_path))
+                
+            # Check reference audio file exists and isn't empty
+            if ref_audio_path and (not os.path.exists(ref_audio_path) or not os.path.getsize(ref_audio_path)):
+                raise HTTPException(status_code=400, detail="Reference audio file is empty or could not be created")
         
         # Output path
         output_path = temp_dir / f"output_{unique_id}.wav"
@@ -394,6 +434,7 @@ async def generate_music(
             audio_length = int(audio_length)
             steps = int(steps)
             cfg_strength = float(cfg_strength)
+            chunked = bool(chunked)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid parameter value: {str(e)}")
         
@@ -406,17 +447,19 @@ async def generate_music(
             audio_length=audio_length,
             steps=steps,
             cfg_strength=cfg_strength,
-            lyrics=lyrics_text  # Pass lyrics directly in the params
+            lyrics=lyrics_text,
+            chunked=chunked
         )
         
         print(f"Generation parameters: {params}")
         
         # Process music generation with direct lyrics text
         result = await process_music_generation(
-            lyrics_text,
-            str(ref_audio_path),
-            str(output_path),
-            params
+            lyrics_text=lyrics_text,
+            ref_audio_path=ref_audio_path,
+            ref_prompt=reference_prompt if has_ref_prompt else None,
+            output_path=str(output_path),
+            params=params
         )
         
         # Schedule cleanup of temporary files
